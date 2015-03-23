@@ -1,0 +1,68 @@
+-- Creating hdfs directory to put txt data.
+hadoop fs -mkdir /user/hive/warehouse/base_imputation
+
+-- Put data imputation_data.txt inside hdfs.
+hadoop fs -put imputation_data.txt /user/hive/warehouse/base_imputation/
+
+-- Creating schema in hive.
+create external table base_imputation (
+V1 string,
+V2 string,
+V3 string,
+V4 string,
+V5 string,
+V6 string,
+V7 string,
+V8 string,
+V9 string,
+V10 string
+) row format delimited fields terminated by "\t" lines terminated by "\n"
+stored as textfile location "/user/hive/warehouse/base_imputation/";
+
+-- Running pairwise pearson correlation in all variables.
+
+set mapred.reduce.tasks = 2;
+add file /home/cloudera/Desktop/Blog/mapper_pearson.R;
+add file /home/cloudera/Desktop/Blog/reducer_pearson.R;
+
+drop table base_imputation_pearson;
+create table base_imputation_pearson as select transform(x.*)
+using 'Rscript reducer_pearson.R' 
+as (var1 string, var2 string, pearson double)
+from (
+select transform (*)
+using 'Rscript mapper_pearson.R'
+as (chave string, sum_x string, sum_y string, sum_x2 string, sum_y2 string, sum_xy string, n string)
+from base_imputation distribute by chave
+) x sort by var1, abs(pearson) desc;
+
+-- Creating file with the biggest pearson correlations for each variable.
+
+set mapred.reduce.tasks = 1;
+add file /home/cloudera/Desktop/Blog/order_pearson.R;
+
+select transform(x.*)
+using 'Rscript order_pearson.R "3" "/home/cloudera/Desktop/Blog/order_pearson.txt"' 
+from (
+select * from base_imputation_pearson distribute by '1'
+) x;
+
+-- Running the imputation model in map reduce.
+
+set mapred.reduce.tasks = 2;
+add file /home/cloudera/Desktop/Blog/mapper_gam_imp.R;
+add file /home/cloudera/Desktop/Blog/reducer_gam_imp.R;
+
+drop table base_imputation_ver;
+create table base_imputation_ver as select transform(x.*)
+using 'Rscript reducer_gam_imp.R' 
+as (var string, valor string)
+from (
+select transform (*)
+using 'Rscript mapper_gam_imp.R "/home/cloudera/Desktop/Blog/order_pearson.txt"'
+as (chave string, var0 string, var1 string, var2 string, var3 string)
+from base_imputation distribute by chave
+) x;
+
+
+
